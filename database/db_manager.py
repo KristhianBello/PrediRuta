@@ -83,39 +83,20 @@ class PrediRutaDBManager:
             console.print("[yellow]🔄 Inicializando base de datos PrediRuta...[/yellow]")
             
             # Leer el script SQL
-            script_path = os.path.join(os.path.dirname(__file__), "init_db.sql")
+            script_path = os.path.join(os.path.dirname(__file__), "script_data_base.sql")
             if not os.path.exists(script_path):
                 console.print(f"[red]❌ No se encontró el archivo {script_path}[/red]")
+                console.print("[yellow]ℹ️  Por favor, ejecuta el script SQL manualmente en Supabase SQL Editor[/yellow]")
+                console.print(f"[blue]📄 Archivo esperado: {script_path}[/blue]")
                 return False
             
-            with open(script_path, 'r', encoding='utf-8') as f:
-                sql_script = f.read()
+            console.print("[yellow]ℹ️  Para inicializar la base de datos:[/yellow]")
+            console.print("[blue]1. Ve a tu proyecto en Supabase Dashboard[/blue]")
+            console.print("[blue]2. Navega a SQL Editor[/blue]")
+            console.print("[blue]3. Copia y pega el contenido de script_data_base.sql[/blue]")
+            console.print("[blue]4. Ejecuta el script[/blue]")
+            console.print("\n[green]✅ Luego ejecuta: python db_manager.py check[/green]")
             
-            # Dividir el script en comandos individuales
-            commands = [cmd.strip() for cmd in sql_script.split(';') if cmd.strip() and not cmd.strip().startswith('--')]
-            
-            success_count = 0
-            error_count = 0
-            
-            with Progress() as progress:
-                task = progress.add_task("Ejecutando comandos SQL...", total=len(commands))
-                
-                for i, command in enumerate(commands):
-                    try:
-                        # Ejecutar comando usando Supabase
-                        if command.upper().startswith(('CREATE', 'ALTER', 'INSERT', 'DROP')):
-                            # Para comandos DDL, usar rpc si es posible
-                            result = self.supabase.rpc('exec_sql', {'sql': command}).execute()
-                        
-                        success_count += 1
-                        
-                    except Exception as e:
-                        console.print(f"[yellow]⚠️  Comando {i+1} falló (puede ser normal): {str(e)[:100]}[/yellow]")
-                        error_count += 1
-                    
-                    progress.advance(task)
-            
-            console.print(f"[green]✅ Inicialización completada: {success_count} éxitos, {error_count} advertencias[/green]")
             return True
             
         except Exception as e:
@@ -153,10 +134,11 @@ class PrediRutaDBManager:
             # Verificar existencia de tablas
             for table in expected_tables:
                 try:
-                    result = self.supabase.table(table).select('id', count='exact').limit(1).execute()
+                    result = self.supabase.table(table).select('*', count='exact').limit(1).execute()
                     status['tables_exist'][table] = True
-                    status['table_counts'][table] = result.count or 0
-                except:
+                    # Obtener count correctamente de la respuesta
+                    status['table_counts'][table] = len(result.data) if hasattr(result, 'data') else 0
+                except Exception as e:
                     status['tables_exist'][table] = False
                     status['table_counts'][table] = 0
             
@@ -194,7 +176,10 @@ class PrediRutaDBManager:
                     'lanes': 4,
                     'city': 'Quito',
                     'province': 'Pichincha',
-                    'length_km': 25.5
+                    'country': 'EC',
+                    'length_km': 25.5,
+                    'surface_type': 'asphalt',
+                    'is_active': True
                 },
                 {
                     'id': 'EC-E25-001',
@@ -204,7 +189,10 @@ class PrediRutaDBManager:
                     'lanes': 4,
                     'city': 'Guayaquil',
                     'province': 'Guayas',
-                    'length_km': 15.8
+                    'country': 'EC',
+                    'length_km': 15.8,
+                    'surface_type': 'asphalt',
+                    'is_active': True
                 },
                 {
                     'id': 'MTA-AV6DIC-001',
@@ -214,7 +202,10 @@ class PrediRutaDBManager:
                     'lanes': 3,
                     'city': 'Manta',
                     'province': 'Manabí',
-                    'length_km': 8.2
+                    'country': 'EC',
+                    'length_km': 8.2,
+                    'surface_type': 'asphalt',
+                    'is_active': True
                 }
             ]
             
@@ -249,13 +240,14 @@ class PrediRutaDBManager:
                         congestion = 0.15
                     
                     traffic_data_samples.append({
-                        'road_segment_id': segment['id'],
+                        'segment_id': segment['id'],
                         'timestamp': timestamp.isoformat(),
                         'speed_kmh': round(speed, 2),
-                        'traffic_level': traffic_level,
-                        'congestion_factor': congestion,
+                        'congestion_level': traffic_level,
                         'vehicle_count': int(100 * congestion),
-                        'data_source': 'simulation'
+                        'day_of_week': timestamp.weekday(),
+                        'hour_of_day': timestamp.hour,
+                        'is_holiday': False
                     })
             
             # Insertar datos de tráfico en lotes
@@ -279,7 +271,7 @@ class PrediRutaDBManager:
             return False
     
     async def reset_database(self) -> bool:
-        """CUIDADO: Elimina todas las tablas y reinicia la base de datos"""
+        """CUIDADO: Elimina todos los datos de las tablas"""
         console.print("[red]⚠️  ADVERTENCIA: Esta operación eliminará TODOS los datos![/red]")
         confirm = input("¿Estás seguro? Escribe 'RESET' para confirmar: ")
         
@@ -288,33 +280,28 @@ class PrediRutaDBManager:
             return False
         
         try:
-            console.print("[yellow]🗑️  Eliminando tablas existentes...[/yellow]")
+            console.print("[yellow]🗑️  Eliminando datos de las tablas...[/yellow]")
             
-            # Lista de tablas en orden inverso para evitar problemas de FK
-            tables_to_drop = [
+            # Lista de tablas para limpiar (en orden para evitar problemas de FK)
+            tables_to_clean = [
                 'api_usage',
-                'system_logs',
-                'ml_models',
                 'route_options',
                 'route_queries',
                 'favorite_routes',
-                'traffic_predictions',
                 'traffic_data',
-                'road_segments',
-                'user_profiles'
+                'ml_models'
             ]
             
-            for table in tables_to_drop:
+            for table in tables_to_clean:
                 try:
-                    # Supabase no permite DROP TABLE directamente, usaremos SQL si tenemos acceso
-                    console.print(f"[yellow]Eliminando tabla {table}...[/yellow]")
+                    # Eliminar todos los registros de la tabla
+                    result = self.supabase.table(table).delete().neq('id', '00000000-0000-0000-0000-000000000000').execute()
+                    console.print(f"[green]✅ Tabla {table} limpiada[/green]")
                 except Exception as e:
-                    console.print(f"[yellow]⚠️  No se pudo eliminar {table}: {e}[/yellow]")
+                    console.print(f"[yellow]⚠️  No se pudo limpiar {table}: {e}[/yellow]")
             
-            # Reinicializar
-            await self.init_database()
-            
-            console.print("[green]✅ Base de datos reiniciada exitosamente[/green]")
+            console.print("[green]✅ Datos eliminados exitosamente[/green]")
+            console.print("[blue]ℹ️  Para reinsertar datos: python db_manager.py seed[/blue]")
             return True
             
         except Exception as e:
